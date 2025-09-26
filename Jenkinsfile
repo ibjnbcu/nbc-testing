@@ -1,9 +1,15 @@
+
 pipeline {
     agent { label 'QA-Agent' }
     
     environment {
+        // Slack Configuration
         SLACK_CHANNEL = '#automation_test_results'
+        
+        // Python environment
         VENV = "${WORKSPACE}/venv"
+        
+        // Report URL
         HTML_REPORT_URL = "${BUILD_URL}NBC_20Multi-Site_20Report/"
     }
     
@@ -16,19 +22,37 @@ pipeline {
     
     parameters {
         choice(
-            name: 'TEST_SCOPE',
-            choices: ['NBC_NEW_YORK', 'TOP_5_SITES', 'ALL_SITES'],
-            description: 'Testing scope'
+            name: 'SITES_TO_TEST',
+            choices: ['NBC_NEW_YORK_ONLY', 'ALL_SITES'],
+            description: 'Test NBC New York only or all sites'
+        )
+        choice(
+            name: 'PARALLEL_WORKERS',
+            choices: ['1', '3', '5'],
+            description: 'Number of parallel workers'
         )
     }
     
     stages {
-        stage('Setup') {
+        stage('Checkout') {
+            steps {
+                echo "========================================="
+                echo "Starting NBC Testing Pipeline"
+                echo "========================================="
+                checkout scm
+            }
+        }
+        
+        stage('Setup Python Environment') {
             steps {
                 script {
+                    echo "Setting up Python environment..."
+                    
                     sh '''
+                        python3 --version
                         python3 -m venv ${VENV}
                         . ${VENV}/bin/activate
+                        pip install --upgrade pip
                         pip install selenium==4.16.0
                         pip install webdriver-manager==4.0.1
                         pip install requests==2.31.0
@@ -40,265 +64,190 @@ pipeline {
         stage('Run Tests') {
             steps {
                 script {
-                    // Create test that works with your Chromium installation
-                    writeFile file: 'test_nbc.py', text: '''
+                    echo "Running NBC Tests..."
+                    
+                    // Check if the main test script exists
+                    def scriptExists = fileExists('nbc_multi_site_tester.py')
+                    
+                    if (scriptExists) {
+                        // Determine which sites to test
+                        def sitesParam = ""
+                        if (params.SITES_TO_TEST == 'NBC_NEW_YORK_ONLY') {
+                            sitesParam = '--sites "New York"'
+                        }
+                        
+                        // Run the tests
+                        sh """
+                            . ${VENV}/bin/activate
+                            python nbc_multi_site_tester.py --workers ${params.PARALLEL_WORKERS} ${sitesParam} || true
+                        """
+                    } else {
+                        echo "Test script not found, creating basic test..."
+                        
+                        // Create a basic test file
+                        writeFile file: 'basic_test.py', text: '''
 import json
-import os
 from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-
-# Configure for Chromium (not Chrome)
-options = Options()
-options.binary_location = '/usr/bin/chromium-browser'
-options.add_argument('--headless')
-options.add_argument('--no-sandbox')
-options.add_argument('--disable-dev-shm-usage')
-options.add_argument('--disable-gpu')
-
-# Test NBC sites
-sites = {
-    "NBC New York": "https://www.nbcnewyork.com/",
-    "NBC Los Angeles": "https://www.nbclosangeles.com/",
-    "NBC Chicago": "https://www.nbcchicago.com/",
-    "NBC Philadelphia": "https://www.nbcphiladelphia.com/",
-    "NBC Boston": "https://www.nbcboston.com/"
-}
 
 results = {
-    "timestamp": datetime.now().strftime("%B %d, %Y at %I:%M %p"),
-    "sites_tested": 0,
+    "timestamp": datetime.now().isoformat(),
+    "duration_seconds": 0,
+    "total_sites": 1,
     "sites_passed": 0,
-    "sites_failed": 0,
-    "details": []
+    "sites_failed": 1,
+    "sites_with_warnings": 0,
+    "total_tests": 1,
+    "total_passed": 0,
+    "total_failed": 1,
+    "total_warnings": 0,
+    "sites": [{
+        "site_name": "New York",
+        "site_url": "https://www.nbcnewyork.com/",
+        "total_tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "warnings": 0,
+        "success_rate": 0,
+        "test_results": [{
+            "test": "Setup",
+            "status": "ERROR",
+            "details": "Test script not found"
+        }],
+        "duration": 0
+    }]
 }
 
-# Use system chromedriver
-service = Service('/usr/bin/chromedriver')
-
-for name, url in list(sites.items())[:1]:  # Test 1 site for now
-    try:
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.get(url)
-        title = driver.title
-        driver.quit()
-        
-        results["sites_tested"] += 1
-        results["sites_passed"] += 1
-        results["details"].append({
-            "site": name,
-            "status": "PASSED",
-            "title": title
-        })
-        print(f"✅ {name}: PASSED")
-        
-    except Exception as e:
-        results["sites_tested"] += 1
-        results["sites_failed"] += 1
-        results["details"].append({
-            "site": name,
-            "status": "FAILED",
-            "error": str(e)[:100]
-        })
-        print(f"❌ {name}: FAILED - {str(e)[:50]}")
-
-# Save results
-with open("test_results.json", "w") as f:
+with open("test_summary.json", "w") as f:
     json.dump(results, f, indent=2)
 
-# Generate HTML report
-html = f"""
+print("Basic test completed")
+'''
+                        
+                        sh '''
+                            . ${VENV}/bin/activate
+                            python basic_test.py
+                        '''
+                    }
+                    
+                    // Ensure results files exist
+                    if (!fileExists('test_summary.json')) {
+                        writeFile file: 'test_summary.json', text: '''
+{
+    "timestamp": "''' + new Date().format("yyyy-MM-dd'T'HH:mm:ss") + '''",
+    "duration_seconds": 0,
+    "total_sites": 1,
+    "sites_passed": 0,
+    "sites_failed": 1,
+    "sites_with_warnings": 0,
+    "total_tests": 1,
+    "total_passed": 0,
+    "total_failed": 1,
+    "total_warnings": 0,
+    "sites": []
+}'''
+                    }
+                    
+                    if (!fileExists('multi_site_report.html')) {
+                        writeFile file: 'multi_site_report.html', text: '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>NBC Digital Properties Test Report</title>
+    <title>NBC Test Report</title>
     <style>
-        body {{ 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-        }}
-        .summary {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }}
-        .card {{
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .metric {{ font-size: 2em; font-weight: bold; }}
-        .label {{ color: #666; font-size: 0.9em; }}
-        .passed {{ color: #10b981; }}
-        .failed {{ color: #ef4444; }}
-        table {{
-            width: 100%;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        th {{ 
-            background: #f9fafb;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-        }}
-        td {{ 
-            padding: 12px;
-            border-top: 1px solid #e5e7eb;
-        }}
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .error { color: red; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>NBC Digital Properties Test Report</h1>
-        <p>Executive Dashboard - {results["timestamp"]}</p>
-    </div>
-    
-    <div class="summary">
-        <div class="card">
-            <div class="metric">{results["sites_tested"]}</div>
-            <div class="label">SITES TESTED</div>
-        </div>
-        <div class="card">
-            <div class="metric passed">{results["sites_passed"]}</div>
-            <div class="label">OPERATIONAL</div>
-        </div>
-        <div class="card">
-            <div class="metric failed">{results["sites_failed"]}</div>
-            <div class="label">ISSUES DETECTED</div>
-        </div>
-        <div class="card">
-            <div class="metric">{int(results["sites_passed"]/max(results["sites_tested"],1)*100)}%</div>
-            <div class="label">SUCCESS RATE</div>
-        </div>
-    </div>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>Property</th>
-                <th>Status</th>
-                <th>Details</th>
-            </tr>
-        </thead>
-        <tbody>
-"""
-
-for detail in results["details"]:
-    status_color = "passed" if detail["status"] == "PASSED" else "failed"
-    html += f"""
-            <tr>
-                <td>{detail["site"]}</td>
-                <td><span class="{status_color}">● {detail["status"]}</span></td>
-                <td>{detail.get("title", detail.get("error", ""))}</td>
-            </tr>
-    """
-
-html += """
-        </tbody>
-    </table>
+    <h1>NBC Test Report</h1>
+    <p class="error">Test execution issue - check Jenkins logs</p>
+    <p>Build: #''' + env.BUILD_NUMBER + '''</p>
 </body>
-</html>
-"""
-
-with open("multi_site_report.html", "w") as f:
-    f.write(html)
-
-print(f"\\nSummary: {results['sites_passed']}/{results['sites_tested']} sites operational")
-'''
-                    
-                    sh '''
-                        . ${VENV}/bin/activate
-                        python test_nbc.py
-                    '''
+</html>'''
+                    }
                 }
             }
         }
         
         stage('Archive Reports') {
             steps {
-                archiveArtifacts artifacts: 'multi_site_report.html, test_results.json', 
-                                 allowEmptyArchive: true
-                
-                publishHTML([
-                    reportDir: '.',
-                    reportFiles: 'multi_site_report.html',
-                    reportName: 'NBC Multi-Site Report'
-                ])
+                script {
+                    echo "Archiving test reports..."
+                    
+                    // Archive artifacts
+                    archiveArtifacts artifacts: 'multi_site_report.html, test_summary.json', 
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                    
+                    // Publish HTML report
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: '.',
+                        reportFiles: 'multi_site_report.html',
+                        reportName: 'NBC Multi-Site Report',
+                        reportTitles: 'Test Results'
+                    ])
+                }
             }
         }
         
         stage('Send Slack Notification') {
             steps {
                 script {
-                    def results = readJSON file: 'test_results.json'
-                    def status = results.sites_failed == 0 ? 'OPERATIONAL' : 'ISSUES DETECTED'
-                    def emoji = results.sites_failed == 0 ? '🟢' : '🔴'
-                    def color = results.sites_failed == 0 ? 'good' : 'danger'
+                    echo "Sending Slack notification..."
                     
-                    // Professional Slack message
-                    def message = """
-╔════════════════════════════════════════╗
-║     NBC DIGITAL PROPERTIES STATUS      ║
-╚════════════════════════════════════════╝
+                    try {
+                        // Read test results
+                        def summaryContent = readFile('test_summary.json')
+                        def summary = readJSON text: summaryContent
+                        
+                        // Determine status
+                        def testStatus = summary.sites_failed == 0 ? 'PASSED' : 'FAILED'
+                        def emoji = summary.sites_failed == 0 ? '✅' : '❌'
+                        def color = summary.sites_failed == 0 ? 'good' : 'danger'
+                        
+                        // Create formatted message
+                        def message = """
+════════════════════════════════════════
+        NBC TEST EXECUTION REPORT        
+════════════════════════════════════════
 
-${emoji} Status: ${status}
-📅 ${results.timestamp}
+${emoji} Status: ${testStatus}
+📅 Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
 🔢 Build: #${BUILD_NUMBER}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EXECUTIVE SUMMARY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+────────────────────────────────────────
+RESULTS SUMMARY
+────────────────────────────────────────
+Sites Tested: ${summary.total_sites}
+Sites Passed: ${summary.sites_passed}
+Sites Failed: ${summary.sites_failed}
+Tests Run: ${summary.total_tests}
+Tests Passed: ${summary.total_passed}
+Tests Failed: ${summary.total_failed}
+Success Rate: ${summary.total_tests > 0 ? (summary.total_passed * 100 / summary.total_tests).intValue() : 0}%
 
-Properties Tested:    ${results.sites_tested}
-Fully Operational:    ${results.sites_passed}
-Requiring Attention:  ${results.sites_failed}
-System Health:        ${(results.sites_passed/results.sites_tested*100).intValue()}%
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-                    
-                    // Add site details
-                    if (results.details) {
-                        message += "PROPERTY STATUS\\n"
-                        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n"
-                        results.details.each { site ->
-                            def icon = site.status == "PASSED" ? "✅" : "❌"
-                            message += "${icon} ${site.site}\\n"
-                        }
-                        message += "\\n"
-                    }
-                    
-                    message += """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📊 Detailed Report: ${HTML_REPORT_URL}
+────────────────────────────────────────
+📊 Full Report: ${HTML_REPORT_URL}
 📋 Build Details: ${BUILD_URL}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NBC Quality Assurance Team
-Ensuring Digital Excellence
+────────────────────────────────────────
 """
-                    
-                    slackSend(
-                        channel: env.SLACK_CHANNEL,
-                        color: color,
-                        message: message
-                    )
+                        
+                        // Send to Slack
+                        slackSend(
+                            channel: env.SLACK_CHANNEL,
+                            color: color,
+                            message: message
+                        )
+                        
+                        echo "Slack notification sent successfully"
+                        
+                    } catch (Exception e) {
+                        echo "Warning: Failed to send Slack notification: ${e.message}"
+                        echo "This is not critical - build will continue"
+                    }
                 }
             }
         }
@@ -306,7 +255,26 @@ Ensuring Digital Excellence
     
     post {
         always {
-            sh "rm -rf ${VENV}"
+            script {
+                // Clean up virtual environment
+                sh '''
+                    if [ -d "${VENV}" ]; then
+                        rm -rf ${VENV}
+                    fi
+                '''
+                
+                echo "========================================="
+                echo "Pipeline completed"
+                echo "========================================="
+            }
+        }
+        
+        success {
+            echo 'Pipeline completed successfully'
+        }
+        
+        failure {
+            echo 'Pipeline failed - check logs for details'
         }
     }
 }
