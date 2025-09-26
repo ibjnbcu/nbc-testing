@@ -3,7 +3,7 @@ pipeline {
     
     environment {
         // Slack Configuration
-        SLACK_CHANNEL = '#ops-realtime-monitoring'
+        SLACK_CHANNEL = '#automation_test_results'
         SLACK_WEBHOOK_CREDENTIALS = 'Jenkins-Slack-Integration'
         
         // Python environment
