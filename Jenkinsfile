@@ -175,7 +175,7 @@ View Full Report: ${HTML_REPORT_URL}"""
                 color: 'warning',
                 message: "⚠️ NBC Tests have failures - Build #${BUILD_NUMBER}\nCheck report: ${HTML_REPORT_URL}",
                 tokenCredentialId: env.SLACK_WEBHOOK_CREDENTIALS,
-                teamDomain: 'your-team',
+                teamDomain: 'ops-realtime-monitoring',
                 botUser: true
             )
         }
