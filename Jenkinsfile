@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent { label 'Jenkins 2' }
     
     environment {
         // Slack Configuration
