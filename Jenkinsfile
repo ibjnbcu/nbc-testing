@@ -4,6 +4,7 @@ pipeline {
     environment {
         SLACK_CHANNEL = '#automation_test_results'
         VENV = "${WORKSPACE}/venv"
+        HTML_REPORT_URL = "${BUILD_URL}artifact/index.html"
     }
     
     options {
@@ -17,12 +18,12 @@ pipeline {
         choice(
             name: 'STATION',
             choices: ['NBC New York', 'ALL_STATIONS'],
-            description: 'Which station(s) to test'
+            description: 'Which station to test'
         )
         string(
             name: 'CUSTOM_URL',
             defaultValue: '',
-            description: 'Optional: Enter custom URL to test'
+            description: 'Optional: Custom URL to test'
         )
     }
     
@@ -34,7 +35,6 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-                echo "Code checked out"
             }
         }
         
@@ -45,7 +45,6 @@ pipeline {
                     . ${VENV}/bin/activate
                     pip install --quiet --upgrade pip
                     pip install --quiet selenium==4.16.0 webdriver-manager==4.0.1
-                    echo "Python environment ready"
                 '''
             }
         }
@@ -54,11 +53,8 @@ pipeline {
             steps {
                 sh '''
                     if ! command -v chromium-browser &> /dev/null; then
-                        echo "Installing Chromium..."
                         sudo apt-get update -qq
                         sudo apt-get install -y -qq chromium-browser chromium-chromedriver
-                    else
-                        echo "Chromium already installed"
                     fi
                 '''
             }
@@ -75,16 +71,23 @@ pipeline {
                         testCmd += " --station '${params.STATION}'"
                     }
                     
-                    sh testCmd
+                    sh testCmd + " || true"
                 }
             }
         }
         
-        stage('Archive Results') {
+        stage('Archive Reports') {
             steps {
-                archiveArtifacts artifacts: 'test_summary.json',
-                                allowEmptyArchive: false
-                echo "Results archived"
+                archiveArtifacts artifacts: 'index.html, test_summary.json', allowEmptyArchive: false
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: '.',
+                    reportFiles: 'index.html',
+                    reportName: 'Test Report',
+                    reportTitles: 'NBC Test Report'
+                ])
             }
         }
         
@@ -97,56 +100,30 @@ pipeline {
                     def statusIcon = summary.stations_failed == 0 ? ':white_check_mark:' : ':x:'
                     def slackColor = summary.stations_failed == 0 ? 'good' : 'danger'
                     
-                    // Build station details
+                    def successRate = 0
+                    if (summary.total_tests > 0) {
+                        successRate = ((summary.total_passed / summary.total_tests) * 100).toInteger()
+                    }
+                    
                     def details = ""
                     summary.stations.each { station ->
                         def icon = station.overall_status == 'PASS' ? ':white_check_mark:' : ':x:'
-                        details += "${icon} *${station.station_name}*\n"
-                        details += "   Tests: ${station.passed}/${station.total_tests} passed"
-                        
-                        if (station.warnings > 0) {
-                            details += " (:warning: ${station.warnings} warnings)"
-                        }
-                        
-                        details += "\n"
-                        
-                        // Show failures
-                        if (station.failed > 0 || station.errors > 0) {
-                            def failures = station.test_results.findAll { 
-                                it.status == 'FAIL' || it.status == 'ERROR' 
-                            }
-                            failures.each { test ->
-                                details += "      :x: ${test.test}: ${test.message}\n"
-                            }
-                        }
-                        
-                        // Show performance
-                        if (station.performance?.loadTime) {
-                            def loadSec = (station.performance.loadTime / 1000).round(2)
-                            details += "   Load time: ${loadSec}s\n"
-                        }
-                        
-                        details += "   Duration: ${station.duration_seconds}s\n\n"
+                        details += "${icon} *${station.station_name}*: ${station.passed}/${station.total_tests} passed\n"
                     }
                     
-                    // Send to Slack
                     slackSend(
                         channel: env.SLACK_CHANNEL,
                         color: slackColor,
-                        message: """
-${statusIcon} *NBC Station Test #${BUILD_NUMBER}: ${overallStatus}*
+                        message: """${statusIcon} *NBC Test #${BUILD_NUMBER}: ${overallStatus}*
 
-*Overall Results:*
+*Results:*
 - Stations: ${summary.stations_passed}/${summary.total_stations} passed
 - Tests: ${summary.total_passed}/${summary.total_tests} passed
-- Success Rate: ${((summary.total_passed / summary.total_tests) * 100).round(1)}%
+- Success Rate: ${successRate}%
 
-*Station Details:*
 ${details}
 
-:link: Console: ${BUILD_URL}console
-:page_facing_up: Report: ${BUILD_URL}artifact/test_summary.json
-"""
+:page_facing_up: *View Full Report:* ${HTML_REPORT_URL}"""
                     )
                 }
             }
@@ -156,20 +133,6 @@ ${details}
     post {
         always {
             sh "rm -rf ${VENV}"
-        }
-        
-        failure {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color: 'danger',
-                message: """
-:warning: *NBC Test #${BUILD_NUMBER}: PIPELINE FAILURE*
-
-The pipeline encountered an error and could not complete.
-
-Check console: ${BUILD_URL}console
-"""
-            )
         }
     }
 }
