@@ -63,7 +63,7 @@ pipeline {
         stage('Run Tests') {
             steps {
                 script {
-                    def testCmd = ". ${VENV}/bin/activate && python nbc_test.py"
+                    def testCmd = ". ${VENV}/bin/activate && python multi_nbc_test.py"
 
                     if (params.CUSTOM_URL) {
                         testCmd += " --url '${params.CUSTOM_URL}'"
