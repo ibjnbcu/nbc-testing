@@ -44,7 +44,7 @@ pipeline {
                     python3 -m venv ${VENV}
                     . ${VENV}/bin/activate
                     pip install --quiet --upgrade pip
-                    pip install --quiet selenium==4.16.0 webdriver-manager==4.0.1
+                    pip install --quiet selenium==4.16.0 webdriver-manager==4.0.1 requests
                 '''
             }
         }
@@ -63,7 +63,7 @@ pipeline {
         stage('Run Tests') {
             steps {
                 script {
-                    def testCmd = ". ${VENV}/bin/activate && python nbc_test.py"
+                    def testCmd = ". ${VENV}/bin/activate && python nbc_station_tester.py"
                     
                     if (params.CUSTOM_URL) {
                         testCmd += " --url '${params.CUSTOM_URL}'"
@@ -71,6 +71,7 @@ pipeline {
                         testCmd += " --station '${params.STATION}'"
                     }
                     
+                    // Run the test script, allow non-zero exit without failing Jenkins job
                     sh testCmd + " || true"
                 }
             }
